@@ -14,9 +14,12 @@ import (
 
 // TransactionalPublisher is a Kafka Publisher with transactional support.
 // The publisher will send all messages given in a Publish call in a single transaction.
-// It will also add the consumer message to the transaction, implementing an exactly-once delivery semantic.
+// If configured with ExactlyOnce, it will also add the consumer message to the transaction, implementing an
+// exactly-once delivery semantic.
 // The information about the consumed message is taken from the context of the published messages, which are filled
-// by the Subscriber. Please note that the Subscriber has to be configured with ExactlyOnce = true.
+// by the Subscriber. Please note that the Subscriber has also to be configured with ExactlyOnce = true.
+// With ExactlyOnce = false, the TransactionalPublisher will still send the messages in a single transaction, but without
+// adding the consumed message to the transaction.
 //
 // Make sure, that the consumers of the messages published by the TransactionalPublisher have their Consumer.IsolationLevel
 // set to ReadCommited. Otherwise, messages of aborted transactions will still be processed.
