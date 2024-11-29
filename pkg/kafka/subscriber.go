@@ -86,6 +86,9 @@ type SubscriberConfig struct {
 	// Tracer is used to trace Kafka messages.
 	// If nil, then no tracing will be used.
 	Tracer SaramaTracer
+
+	// ExactlyOnce should be set to true, if you have configured a Kafka TransactionalPublisher and you want to consume messages exactly once.
+	ExactlyOnce bool
 }
 
 // NoSleep can be set to SubscriberConfig.NackResendSleep and SubscriberConfig.ReconnectRetrySleep.
@@ -100,6 +103,10 @@ func (c *SubscriberConfig) setDefaults() {
 	}
 	if c.ReconnectRetrySleep == 0 {
 		c.ReconnectRetrySleep = time.Second
+	}
+
+	if c.ExactlyOnce {
+		c.OverwriteSaramaConfig.Consumer.IsolationLevel = sarama.ReadCommitted
 	}
 }
 
@@ -471,6 +478,8 @@ func (s *Subscriber) createMessagesHandler(output chan *message.Message) message
 		nackResendSleep: s.config.NackResendSleep,
 		logger:          s.logger,
 		closing:         s.closing,
+		excactlyOnce:    s.config.ExactlyOnce,
+		consumerGroup:   s.config.ConsumerGroup,
 	}
 }
 
@@ -536,8 +545,10 @@ type messageHandler struct {
 
 	nackResendSleep time.Duration
 
-	logger  watermill.LoggerAdapter
-	closing chan struct{}
+	logger        watermill.LoggerAdapter
+	closing       chan struct{}
+	excactlyOnce  bool
+	consumerGroup string
 }
 
 func (h messageHandler) processMessage(
@@ -553,8 +564,12 @@ func (h messageHandler) processMessage(
 
 	h.logger.Trace("Received message from Kafka", receivedMsgLogFields)
 
-	ctx = setPartitionToCtx(ctx, kafkaMsg.Partition)
-	ctx = setPartitionOffsetToCtx(ctx, kafkaMsg.Offset)
+	ctx = setConsumerDataToCtx(ctx, ConsumerData{
+		GroupID:   h.consumerGroup,
+		Topic:     kafkaMsg.Topic,
+		Partition: kafkaMsg.Partition,
+		Offset:    kafkaMsg.Offset,
+	})
 	ctx = setMessageTimestampToCtx(ctx, kafkaMsg.Timestamp)
 	ctx = setMessageKeyToCtx(ctx, kafkaMsg.Key)
 
@@ -587,7 +602,7 @@ ResendLoop:
 
 		select {
 		case <-msg.Acked():
-			if sess != nil {
+			if sess != nil && !h.excactlyOnce {
 				if sess.Context().Err() == nil {
 					sess.MarkMessage(kafkaMsg, "")
 				} else {

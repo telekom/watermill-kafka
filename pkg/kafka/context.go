@@ -9,30 +9,37 @@ type contextKey int
 
 const (
 	_ contextKey = iota
-	partitionContextKey
-	partitionOffsetContextKey
 	timestampContextKey
 	keyContextKey
+	consumerDataContextKey
 )
 
-func setPartitionToCtx(ctx context.Context, partition int32) context.Context {
-	return context.WithValue(ctx, partitionContextKey, partition)
+type ConsumerData struct {
+	GroupID   string
+	Topic     string
+	Partition int32
+	Offset    int64
+}
+
+func setConsumerDataToCtx(ctx context.Context, data ConsumerData) context.Context {
+	return context.WithValue(ctx, consumerDataContextKey, data)
+}
+
+func ConsumerDataFromCtx(ctx context.Context) (ConsumerData, bool) {
+	data, ok := ctx.Value(consumerDataContextKey).(ConsumerData)
+	return data, ok
 }
 
 // MessagePartitionFromCtx returns Kafka partition of the consumed message
 func MessagePartitionFromCtx(ctx context.Context) (int32, bool) {
-	partition, ok := ctx.Value(partitionContextKey).(int32)
-	return partition, ok
-}
-
-func setPartitionOffsetToCtx(ctx context.Context, offset int64) context.Context {
-	return context.WithValue(ctx, partitionOffsetContextKey, offset)
+	data, ok := ctx.Value(consumerDataContextKey).(ConsumerData)
+	return data.Partition, ok
 }
 
 // MessagePartitionOffsetFromCtx returns Kafka partition offset of the consumed message
 func MessagePartitionOffsetFromCtx(ctx context.Context) (int64, bool) {
-	offset, ok := ctx.Value(partitionOffsetContextKey).(int64)
-	return offset, ok
+	data, ok := ctx.Value(consumerDataContextKey).(ConsumerData)
+	return data.Offset, ok
 }
 
 func setMessageTimestampToCtx(ctx context.Context, timestamp time.Time) context.Context {

@@ -57,6 +57,7 @@ func newPubSub(t *testing.T, marshaler kafka.MarshalerUnmarshaler, consumerGroup
 	saramaConfig.ChannelBufferSize = 10240
 	saramaConfig.Consumer.Group.Heartbeat.Interval = time.Millisecond * 500
 	saramaConfig.Consumer.Group.Rebalance.Timeout = time.Second * 3
+	saramaConfig.Consumer.IsolationLevel = sarama.ReadCommitted
 
 	var subscriber *kafka.Subscriber
 
@@ -89,6 +90,134 @@ func newPubSub(t *testing.T, marshaler kafka.MarshalerUnmarshaler, consumerGroup
 	return publisher, subscriber
 }
 
+func newTransactionalPubSub(t *testing.T, marshaler kafka.MarshalerUnmarshaler, consumerGroup string) (*kafka.TransactionalPublisher, *kafka.Subscriber) {
+	logger := watermill.NewStdLogger(true, true)
+
+	var err error
+	var publisher *kafka.TransactionalPublisher
+
+	retriesLeft := 5
+	for {
+		publisher, err = kafka.NewTransactionalPublisher(kafka.TransactionalPublisherConfig{
+			Brokers:   kafkaBrokers(),
+			Marshaler: marshaler,
+		}, logger)
+		if err == nil || retriesLeft == 0 {
+			break
+		}
+
+		retriesLeft--
+		fmt.Printf("cannot create kafka Publisher: %s, retrying (%d retries left)", err, retriesLeft)
+		time.Sleep(time.Second * 2)
+	}
+	require.NoError(t, err)
+
+	saramaConfig := kafka.DefaultSaramaSubscriberConfig()
+	saramaConfig.Consumer.Offsets.Initial = sarama.OffsetOldest
+
+	saramaConfig.Admin.Timeout = time.Second * 30
+	saramaConfig.Producer.RequiredAcks = sarama.WaitForAll
+	saramaConfig.ChannelBufferSize = 10240
+	saramaConfig.Consumer.Group.Heartbeat.Interval = time.Millisecond * 500
+	saramaConfig.Consumer.Group.Rebalance.Timeout = time.Second * 3
+	saramaConfig.Consumer.IsolationLevel = sarama.ReadCommitted
+
+	var subscriber *kafka.Subscriber
+
+	retriesLeft = 5
+	for {
+		subscriber, err = kafka.NewSubscriber(
+			kafka.SubscriberConfig{
+				Brokers:               kafkaBrokers(),
+				Unmarshaler:           marshaler,
+				OverwriteSaramaConfig: saramaConfig,
+				ConsumerGroup:         consumerGroup,
+				InitializeTopicDetails: &sarama.TopicDetail{
+					NumPartitions:     8,
+					ReplicationFactor: 1,
+				},
+			},
+			logger,
+		)
+		if err == nil || retriesLeft == 0 {
+			break
+		}
+
+		retriesLeft--
+		fmt.Printf("cannot create kafka Subscriber: %s, retrying (%d retries left)", err, retriesLeft)
+		time.Sleep(time.Second * 2)
+	}
+
+	require.NoError(t, err)
+
+	return publisher, subscriber
+}
+
+func newExactlyOnceSubPub(t *testing.T, marshaler kafka.MarshalerUnmarshaler, consumerGroup string) (*kafka.Subscriber, *kafka.TransactionalPublisher) {
+	logger := watermill.NewStdLogger(true, true)
+
+	var err error
+	var transactionalPublisher *kafka.TransactionalPublisher
+
+	retriesLeft := 5
+	for {
+		transactionalPublisher, err = kafka.NewTransactionalPublisher(kafka.TransactionalPublisherConfig{
+			Brokers:     kafkaBrokers(),
+			Marshaler:   marshaler,
+			ExactlyOnce: true,
+		}, logger)
+		if err == nil || retriesLeft == 0 {
+			break
+		}
+
+		retriesLeft--
+		fmt.Printf("cannot create kafka Publisher: %s, retrying (%d retries left)", err, retriesLeft)
+		time.Sleep(time.Second * 2)
+	}
+	require.NoError(t, err)
+
+	saramaConfig := kafka.DefaultSaramaSubscriberConfig()
+	saramaConfig.Consumer.Offsets.Initial = sarama.OffsetOldest
+
+	saramaConfig.Admin.Timeout = time.Second * 30
+	saramaConfig.Producer.RequiredAcks = sarama.WaitForAll
+	saramaConfig.ChannelBufferSize = 10240
+	saramaConfig.Consumer.Group.Heartbeat.Interval = time.Millisecond * 500
+	saramaConfig.Consumer.Group.Rebalance.Timeout = time.Second * 3
+	saramaConfig.Consumer.IsolationLevel = sarama.ReadCommitted
+
+	var subscriber *kafka.Subscriber
+
+	retriesLeft = 5
+	for {
+		subscriber, err = kafka.NewSubscriber(
+			kafka.SubscriberConfig{
+				Brokers:               kafkaBrokers(),
+				Unmarshaler:           marshaler,
+				OverwriteSaramaConfig: saramaConfig,
+				ConsumerGroup:         consumerGroup,
+				InitializeTopicDetails: &sarama.TopicDetail{
+					NumPartitions:     8,
+					ReplicationFactor: 1,
+				},
+				ExactlyOnce: true,
+			},
+			logger,
+		)
+		if err == nil || retriesLeft == 0 {
+			break
+		}
+
+		retriesLeft--
+		fmt.Printf("cannot create kafka Subscriber: %s, retrying (%d retries left)", err, retriesLeft)
+		time.Sleep(time.Second * 2)
+	}
+
+	require.NoError(t, err)
+
+	return subscriber, transactionalPublisher
+}
+
 func generatePartitionKey(topic string, msg *message.Message) (string, error) {
 	return msg.Metadata.Get("partition_key"), nil
 }
@@ -99,6 +228,18 @@ func createPubSubWithConsumerGrup(t *testing.T, consumerGroup string) (message.P
 
 func createPubSub(t *testing.T) (message.Publisher, message.Subscriber) {
 	return createPubSubWithConsumerGrup(t, "test")
+}
+
+func createTransactionalPubSub(t *testing.T) (message.Publisher, message.Subscriber) {
+	return newTransactionalPubSub(t, kafka.DefaultMarshaler{}, "test")
+}
+
+func createTransactionalPubSubWithConsumerGroup(t *testing.T, consumerGroup string) (message.Publisher, message.Subscriber) {
+	return newTransactionalPubSub(t, kafka.DefaultMarshaler{}, consumerGroup)
+}
+
+func createTransactionalPartitionedPubSub(t *testing.T) (message.Publisher, message.Subscriber) {
+	return newTransactionalPubSub(t, kafka.NewWithPartitioningMarshaler(generatePartitionKey), "test")
 }
 
 func createPartitionedPubSub(t *testing.T) (message.Publisher, message.Subscriber) {
@@ -122,6 +263,22 @@ func TestPublishSubscribe(t *testing.T) {
 		features,
 		createPubSub,
 		createPubSubWithConsumerGrup,
+	)
+}
+
+func TestTransactionalPublishSubscribe(t *testing.T) {
+	features := tests.Features{
+		ConsumerGroups:      true,
+		ExactlyOnceDelivery: true,
+		GuaranteedOrder:     true,
+		Persistent:          true,
+	}
+
+	tests.TestPubSub(
+		t,
+		features,
+		createTransactionalPartitionedPubSub,
+		createTransactionalPubSubWithConsumerGroup,
 	)
 }
 
@@ -160,6 +317,72 @@ func TestNoGroupSubscriber(t *testing.T) {
 		createNoGroupPubSub,
 		nil,
 	)
+}
+
+func TestExactlyOncePubSub(t *testing.T) {
+	const (
+		numMessages = 500
+		numWorkers  = 10
+	)
+	transactionalSub, transactionalPub := newExactlyOnceSubPub(t, kafka.NewWithPartitioningMarshaler(generatePartitionKey), "testExactlyOnce")
+	inTopic := "inTopic_" + watermill.NewUUID()
+	outTopic := "outTopic_" + watermill.NewUUID()
+	require.NoError(t, transactionalSub.SubscribeInitialize(inTopic))
+	require.NoError(t, transactionalSub.SubscribeInitialize(outTopic))
+
+	router, err := message.NewRouter(message.RouterConfig{}, nil)
+	require.NoError(t, err)
+
+	router.AddHandler(
+		"testExactlyOnce",
+		inTopic,
+		transactionalSub,
+		outTopic,
+		transactionalPub,
+		func(msg *message.Message) ([]*message.Message, error) {
+			return message.Messages{msg}, nil
+		},
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		router.Run(ctx)
+	}()
+
+	pub, sub := newPubSub(t, kafka.NewWithPartitioningMarshaler(generatePartitionKey), "testExactlyOnceFrame")
+	require.NoError(t, sub.SubscribeInitialize(outTopic))
+
+	var messagesToPublish []*message.Message
+	messageIDs := make(map[string]struct{}, numMessages)
+
+	for i := 0; i < numMessages; i++ {
+		id := watermill.NewUUID()
+		messageIDs[id] = struct{}{}
+		msg := message.NewMessage(id, []byte(`{"test": "test"}`))
+		msg.Metadata.Set("partition_key", watermill.NewUUID())
+		messagesToPublish = append(messagesToPublish, msg)
+	}
+	err = pub.Publish(inTopic, messagesToPublish...)
+	require.NoError(t, err, "cannot publish message")
+
+	messages, err := sub.Subscribe(context.Background(), outTopic)
+	require.NoError(t, err)
+
+	receivedMessages, all := subscriber.BulkRead(messages, len(messagesToPublish), time.Second*30)
+	assert.True(t, all, "not all messages received")
+	assert.Len(t, receivedMessages, numMessages, "number of received messages is not equal to number of published messages")
+
+	for _, msg := range receivedMessages {
+		_, ok := messageIDs[msg.UUID]
+		require.True(t, ok, "received message with unexpected UUID: %s", msg.UUID)
+		delete(messageIDs, msg.UUID)
+	}
+	assert.Empty(t, messageIDs, "did not find all expected message IDs")
+	time.Sleep(time.Second * 5)
+
+	require.NoError(t, pub.Close())
+
 }
 
 func TestCtxValues(t *testing.T) {
